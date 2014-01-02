@@ -3,11 +3,10 @@
 Prints out all
 """
 
+import os
 import re
 import sys
 from optparse import OptionParser
-from django.core.management.base import BaseCommand, CommandError
-from optparse import make_option
 
 
 def location(str, pos):
@@ -60,6 +59,12 @@ GOOD_STRINGS = re.compile(
          # Any html attribute that's not value or title
         |[a-z:-]+?(?<!alt)(?<!value)(?<!title)(?<!summary)="[^"]*?"
 
+        # Any html attribute that's not value or title
+        |[a-z:-]+?(?<!alt)(?<!value)(?<!title)(?<!summary)=[^\W]*?[(\w|>)]
+
+         # Boolean attributes
+        |<[^<>]+?(?:checked|selected|disabled|readonly|multiple|ismap|defer|declare|noresize|nowrap|noshade|compact)[^<>]*?>
+
          # HTML opening tag
         |<[\w:]+
 
@@ -73,6 +78,9 @@ GOOD_STRINGS = re.compile(
          # any django template variable
         |{{.*?}}
 
+         # any django template tag
+        |{%.*?%}
+
          # HTML doctype
         |<!DOCTYPE.*?>
 
@@ -85,6 +93,9 @@ GOOD_STRINGS = re.compile(
          # HTML entities
         |&[a-z]{1,10};
 
+        # HTML entities
+        |&\#x[0-9]{1,10};
+
          # CSS style
         |<style.*?</style>
 
@@ -93,7 +104,7 @@ GOOD_STRINGS = re.compile(
         )""",
 
     # MULTILINE to match across lines and DOTALL to make . include the newline
-    re.MULTILINE|re.DOTALL|re.VERBOSE)
+    re.MULTILINE | re.DOTALL | re.VERBOSE | re.IGNORECASE)
 
 # Stops us matching non-letter parts, e.g. just hypens, full stops etc.
 LETTERS = re.compile("\w")
@@ -105,20 +116,22 @@ def replace_strings(filename):
         if index % 2 == 0 and re.search("\w", message):
             before, message, after = re.match("^(\s*)(.*?)(\s*)$", message, re.DOTALL).groups()
             message = message.strip().replace("\n", "").replace("\r", "")
-            change = raw_input("Make '%s' translatable? [Y/n] " % message)
+            change = input("Make '%s' translatable? [Y/n] " % message)
             if change == 'y' or change == "":
                 message = '%s{%% trans "%s" %%}%s' % (before, message, after)
         full_text_lines.append(message)
 
     full_text = "".join(full_text_lines)
-    save_filename = filename.split(".")[0] + "_translated.html"
+    if options.overwrite:
+        save_filename = filename
+    else:
+        save_filename = filename.split(".")[0] + "_translated.html"
     open(save_filename, 'w').write(full_text)
-    print "Fully translated! Saved as: %s" % save_filename
+    print("Fully translated! Saved as: %s" % save_filename)
 
 
-def non_translated_text(filename):
+def non_translated_text(template):
 
-    template = open(filename).read()
     offset = 0
 
     # Find the parts of the template that don't match this regex
@@ -135,27 +148,41 @@ def non_translated_text(filename):
 
 
 def print_strings(filename):
-    for lineno, charpos, message in non_translated_text(filename):
-        print "%s:%s:%s:%s" % (filename, lineno, charpos, message)
+    with open(filename) as fp:
+        file_contents = fp.read()
+
+    for lineno, charpos, message in non_translated_text(file_contents):
+        print("%s:%s:%s:%s" % (filename, lineno, charpos, message))
 
 
-class Command(BaseCommand):
-    args = '<filename>'
-    help = 'A simple script to find non-i18n text in a Django template'
-    option_list = BaseCommand.option_list + (
-        make_option(
-            "-r",
-            "--replace",
-            action="store_true",
-            dest="replace",
-            help="Ask to replace the strings in the file.",
-            default=False)
-        )
+def main():
+    parser = OptionParser(usage="usage: %prog [options] <filenames>")
+    parser.add_option("-r", "--replace", action="store_true", dest="replace",
+                      help="Ask to replace the strings in the file.", default=False)
+    parser.add_option("-o", "--overwrite", action="store_true", dest="overwrite",
+                      help="When replacing the strings, overwrite the original file.  If not specified, the file will be saved in a seperate file named X_translated.html", default=False)
+    parser.add_option("-e", "--exclude", action="append", dest="exclude_filename",
+                      help="Exclude these filenames from being linted", default=[])
+    (options, args) = parser.parse_args()
 
-    def handle(self, *args, **options):
-        if len(args) != 1:
-            raise CommandError("incorrect number of arguments")
-        if options['replace']:
-            replace_strings(args[0])
+    # Create a list of files to check
+    if len(args) == 0:
+        args = [os.getcwd()]
+    files = []
+    for arg in args:
+        if os.path.isdir(arg):
+            for dirpath, dirs, filenames in os.walk(arg):
+                files.extend(os.path.join(dirpath, fname)
+                             for fname in filenames
+                             if (fname.endswith('.html') or fname.endswith('.txt')) and fname not in options.exclude_filename)
         else:
-            print_strings(args[0])
+            files.append(arg)
+
+    for filename in files:
+        if options.replace:
+            replace_strings(filename)
+        else:
+            print_strings(filename)
+
+if __name__ == '__main__':
+    main()
